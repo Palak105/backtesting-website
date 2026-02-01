@@ -2,7 +2,7 @@ import duckdb
 import pandas as pd
 from datetime import timedelta
 
-DB_PATH = "market_data.duckdb"
+from app.utils.duckdb_client import get_duckdb
 
 
 def run_backtest(
@@ -21,31 +21,20 @@ def run_backtest(
     if entry_df.empty:
         return pd.DataFrame()
 
-    con = duckdb.connect(DB_PATH, read_only=True)
-    results = []
+    con = get_duckdb()
+    bucket = os.environ["R2_BUCKET"]
 
-    for _, row in entry_df.iterrows():
-        symbol = row["symbol"]
-        entry_date = row["date"]
-        entry_price = row["close"]
-
-        target_price = entry_price * (1 + target_pct / 100)
-        sl_price = entry_price * (1 - sl_pct / 100)
-
-        max_exit_date = entry_date + timedelta(days=max_holding_days)
-
-        candles = con.execute(
-            """
-            SELECT Date, High, Low, Close
-            FROM market_data
-            WHERE Symbol = ?
-              AND timeframe = ?
-              AND Date > ?
-              AND Date <= ?
-            ORDER BY Date ASC
-            """,
-            [symbol, timeframe, entry_date, max_exit_date]
-        ).df()
+    df = con.execute(
+        f"""
+        SELECT Date, High, Low, Close
+        FROM 's3://{bucket}/market_data.parquet'
+        WHERE Symbol = ?
+        AND timeframe = ?
+        AND Date > ?
+        ORDER BY Date ASC
+        """,
+        [symbol, timeframe, entry_date]
+    ).df()
 
         exit_reason = "TIME_EXIT"
         exit_price = entry_price
