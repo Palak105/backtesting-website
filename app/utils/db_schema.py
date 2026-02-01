@@ -1,9 +1,5 @@
-import duckdb
-import logging
-
-logger = logging.getLogger(__name__)
-
-DUCKDB_PATH = "market_data.duckdb"
+from app.utils.duckdb_client import get_duckdb
+import os
 
 EXCLUDED_COLUMNS = {
     "Symbol",
@@ -15,48 +11,31 @@ EXCLUDED_COLUMNS = {
 }
 
 def get_indicator_columns():
-    try:
-        con = duckdb.connect(DUCKDB_PATH, read_only=True)
+    con = get_duckdb()
+    bucket = os.environ["R2_BUCKET"]
 
-        # ---- get table columns ----
-        cols = con.execute(
-            "DESCRIBE market_data"
-        ).fetchall()
-        # DESCRIBE -> (column_name, column_type, null, key, default, extra)
+    cols = con.execute(
+        f"""
+        DESCRIBE
+        SELECT *
+        FROM 's3://{bucket}/market_data.parquet'
+        """
+    ).fetchall()
 
-        # ---- indicator metadata (optional table) ----
-        meta = {}
-        try:
-            rows = con.execute(
-                "SELECT key, value_type FROM indicator_metadata"
-            ).fetchall()
-            meta = {k: v for k, v in rows}
-        except Exception:
-            # metadata table may not exist yet
-            meta = {}
+    indicators = []
 
-        con.close()
+    for col_name, col_type, *_ in cols:
+        if col_name in EXCLUDED_COLUMNS:
+            continue
 
-        indicators = []
+        value_type = "boolean" if col_type.lower() == "boolean" else "number"
 
-        for col_name, col_type, *_ in cols:
-            if col_name in EXCLUDED_COLUMNS:
-                continue
+        indicators.append({
+            "key": col_name,
+            "label": col_name.replace("_", " "),
+            "valueType": value_type,
+            "operators": ["="] if value_type == "boolean"
+                         else [">", ">=", "<", "<=", "="]
+        })
 
-            value_type = meta.get(col_name, "number")
-
-            indicators.append({
-                "key": col_name,
-                "label": col_name.replace("_", " "),
-                "valueType": value_type,
-                "operators": (
-                    ["="] if value_type == "boolean"
-                    else [">", ">=", "<", "<=", "="]
-                )
-            })
-
-        return indicators
-
-    except Exception as e:
-        logger.error(f"Failed to load indicator columns: {e}")
-        return []
+    return indicators
