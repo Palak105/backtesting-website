@@ -1,25 +1,30 @@
 from fastapi import APIRouter, HTTPException
-import duckdb
 import logging
+import os
+
+from app.utils.duckdb_client import get_duckdb
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
-DUCKDB_PATH = "market_data.duckdb"   # or remove & use parquet directly
-
-# ---------------- DB HELPERS ----------------
-
-def get_duckdb():
-    return duckdb.connect(DUCKDB_PATH, read_only=True)
-
-# ---------------- SAFE COLUMN FETCH ----------------
+# ---------------- SAFE COLUMN FETCH (PARQUET) ----------------
 
 def get_allowed_columns():
     try:
         con = get_duckdb()
-        result = con.execute("DESCRIBE market_data").fetchall()
+        bucket = os.environ["R2_BUCKET"]
+
+        cols = con.execute(
+            f"""
+            DESCRIBE
+            SELECT *
+            FROM 's3://{bucket}/market_data.parquet'
+            """
+        ).fetchall()
+
         con.close()
-        return {row[0] for row in result}
+        return {row[0] for row in cols}
+
     except Exception as e:
         logger.error(f"Error fetching allowed columns: {e}")
         return set()
@@ -31,10 +36,10 @@ ALLOWED_COLUMNS = get_allowed_columns()
 def build_column_with_lookback(col, lookback):
     if not lookback or lookback == 0:
         return f'"{col}"'
-    return f'{col}_lag_{lookback}'
+    return f'"{col}_lag_{lookback}"'
 
 def build_aggregate_column(col, agg_func, start, end):
-    return f'{col}_{agg_func.lower()}_{start}_{end}'
+    return f'"{col}_{agg_func.lower()}_{start}_{end}"'
 
 # ---------------- RECURSIVE GROUP BUILDER ----------------
 
@@ -65,6 +70,7 @@ def build_group(group, params, depth=0):
         if right_type == "value":
             if right_value is None or right_value == "":
                 return None
+
             key = f"v_{depth}_{idx}"
             params[key] = right_value
             return f"{left_expr} {op} ?"
@@ -72,6 +78,7 @@ def build_group(group, params, depth=0):
         if right_type == "indicator":
             if right_value not in ALLOWED_COLUMNS:
                 return None
+
             right_expr = build_column_with_lookback(
                 right_value, rule.get("rightLookback", 0)
             )
@@ -80,6 +87,7 @@ def build_group(group, params, depth=0):
         if right_type == "aggregate":
             if right_value not in ALLOWED_COLUMNS:
                 return None
+
             agg_expr = build_aggregate_column(
                 right_value,
                 rule.get("aggregateFunction"),
@@ -109,41 +117,6 @@ def build_group(group, params, depth=0):
         return ""
 
     return "(" + f" {operator} ".join(clauses) + ")"
-
-# ---------------- REQUIREMENT COLLECTION ----------------
-
-def _rule_left(node):
-    left = node.get("left")
-    return left.get("key") if isinstance(left, dict) else left
-
-def _rule_right_value(node):
-    if node.get("rightType") == "indicator":
-        return (node.get("rightIndicator") or {}).get("key")
-    return node.get("rightValue")
-
-def collect_requirements(node, lookbacks, aggregates):
-    if node.get("type") == "rule":
-        left = _rule_left(node)
-        if left and node.get("leftLookback", 0) > 0:
-            lookbacks.add((left, node["leftLookback"]))
-
-        rv = _rule_right_value(node)
-        if node.get("rightType") == "indicator" and rv and node.get("rightLookback", 0) > 0:
-            lookbacks.add((rv, node["rightLookback"]))
-
-        if node.get("rightType") == "aggregate":
-            aggregates.add((
-                rv,
-                node.get("aggregateFunction"),
-                node.get("aggregateLookbackStart") or 0,
-                node.get("aggregateLookbackEnd") or 0,
-            ))
-
-    for c in node.get("children", []):
-        collect_requirements(c, lookbacks, aggregates)
-
-    for r in node.get("rules", []):
-        collect_requirements(r, lookbacks, aggregates)
 
 # ---------------- MAIN API ----------------
 
@@ -177,10 +150,12 @@ def apply_filters(payload: dict):
             f'{fn}("{col}") OVER (PARTITION BY Symbol ORDER BY Date ROWS BETWEEN {s} PRECEDING AND {e} PRECEDING) AS {col}_{fn.lower()}_{s}_{e}'
         )
 
+    bucket = os.environ["R2_BUCKET"]
+
     query = f"""
     WITH data AS (
         SELECT {", ".join(window_cols)}
-        FROM market_data
+        FROM 's3://{bucket}/market_data.parquet'
         WHERE timeframe = ?
     )
     SELECT DISTINCT
