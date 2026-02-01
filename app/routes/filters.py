@@ -7,6 +7,50 @@ from app.utils.duckdb_client import get_duckdb
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
+# ---------------- REQUIREMENT COLLECTOR ----------------
+
+def collect_requirements(node, lookbacks, aggregates):
+    if not node:
+        return
+
+    # Handle rule nodes
+    if node.get("type") == "rule":
+        left = node.get("left")
+        if isinstance(left, dict):
+            left = left.get("key")
+
+        if left and node.get("leftLookback"):
+            lookbacks.add((left, int(node["leftLookback"])))
+
+        right_type = node.get("rightType")
+        right_value = node.get("rightValue")
+
+        if right_type == "indicator":
+            if not right_value:
+                right_value = (node.get("rightIndicator") or {}).get("key")
+
+            if right_value and node.get("rightLookback"):
+                lookbacks.add((right_value, int(node["rightLookback"])))
+
+        if right_type == "aggregate":
+            if right_value:
+                aggregates.add(
+                    (
+                        right_value,
+                        node.get("aggregateFunction"),
+                        int(node.get("aggregateLookbackStart") or 0),
+                        int(node.get("aggregateLookbackEnd") or 0),
+                    )
+                )
+
+    # Handle group nodes
+    for rule in node.get("rules", []):
+        collect_requirements(rule, lookbacks, aggregates)
+
+    for child in node.get("children", []):
+        collect_requirements(child, lookbacks, aggregates)
+
+
 # ---------------- SAFE COLUMN FETCH (PARQUET) ----------------
 
 def get_allowed_columns():
