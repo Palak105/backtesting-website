@@ -22,15 +22,56 @@ def run_backtest(
     if entry_df.empty:
         return pd.DataFrame()
 
+    # Normalize common column name variants coming from frontend payloads.
+    # Accept: Symbol/symbol, Date/date, Close/close (optional).
+    df = entry_df.copy()
+    rename_map = {}
+    if "symbol" in df.columns and "Symbol" not in df.columns:
+        rename_map["symbol"] = "Symbol"
+    if "date" in df.columns and "Date" not in df.columns:
+        rename_map["date"] = "Date"
+    if "close" in df.columns and "Close" not in df.columns:
+        rename_map["close"] = "Close"
+    if rename_map:
+        df = df.rename(columns=rename_map)
+
+    if "Symbol" not in df.columns or "Date" not in df.columns:
+        return pd.DataFrame()
+
+    # Ensure Date is comparable/usable in DuckDB params.
+    df["Date"] = pd.to_datetime(df["Date"], errors="coerce").dt.date
+    df = df[df["Date"].notna()]
+    if df.empty:
+        return pd.DataFrame()
+
     con = get_duckdb()
     bucket = os.environ["R2_BUCKET"]
 
     results = []
 
-    for _, row in entry_df.iterrows():
+    for _, row in df.iterrows():
         symbol = row["Symbol"]
         entry_date = row["Date"]
-        entry_price = row["Close"]
+
+        entry_price = row["Close"] if "Close" in df.columns else None
+        if entry_price is None or (isinstance(entry_price, float) and pd.isna(entry_price)):
+            # Look up the entry close for that symbol/date/timeframe.
+            price_row = con.execute(
+                """
+                SELECT Close
+                FROM 's3://{bucket}/market_data.parquet'
+                WHERE Symbol = ?
+                  AND timeframe = ?
+                  AND Date = ?
+                LIMIT 1
+                """.format(bucket=bucket),
+                [symbol, timeframe, entry_date],
+            ).fetchone()
+            entry_price = price_row[0] if price_row else None
+
+        if entry_price is None:
+            # Can't backtest without an entry price.
+            continue
 
         target_price = entry_price * (1 + target_pct / 100)
         sl_price = entry_price * (1 - sl_pct / 100)
