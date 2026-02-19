@@ -238,12 +238,19 @@ def apply_filters(payload: dict):
         "SELECT COUNT(*)"
     )
 
+    date_count_query = f"""
+    SELECT COUNT(DISTINCT Date) FROM (
+        {query}
+    ) t
+    """
+
     query += " ORDER BY Date DESC LIMIT ? OFFSET ?"
     params_with_pagination = params + [limit, offset]
 
     try:
         con = get_duckdb()
         total_count = con.execute(count_query, params).fetchone()[0]
+        unique_dates = con.execute(date_count_query, params).fetchone()[0]
         rows = con.execute(query, params_with_pagination).fetchall()
         con.close()
 
@@ -257,7 +264,8 @@ def apply_filters(payload: dict):
                 }
                 for r in rows
             ],
-            "totalCount": total_count  
+            "totalCount": total_count,  
+            "uniqueDates": unique_dates
         }
 
 
