@@ -196,7 +196,7 @@ def apply_filters(payload: dict):
 
     bucket = os.environ["R2_BUCKET"]
 
-    query = f"""
+    base_query = f"""
     WITH data AS (
         SELECT {", ".join(window_cols)}
         FROM 's3://{bucket}/market_data.parquet'
@@ -211,6 +211,7 @@ def apply_filters(payload: dict):
     WHERE 1=1
     """
 
+    query = base_query
     params = [timeframe]
 
     if market_cap and market_cap.lower() != "all":
@@ -232,12 +233,18 @@ def apply_filters(payload: dict):
             query += f" AND {clause}"
             params.extend(rule_params.values())
 
+    count_query = query.replace(
+        "SELECT DISTINCT\n        Symbol,\n        MarketCapCategory,\n        Industry,\n        Date",
+        "SELECT COUNT(*)"
+    )
+
     query += " ORDER BY Date DESC LIMIT ? OFFSET ?"
-    params.extend([limit, offset])
+    params_with_pagination = params + [limit, offset]
 
     try:
         con = get_duckdb()
-        rows = con.execute(query, params).fetchall()
+        total_count = con.execute(count_query, params).fetchone()[0]
+        rows = con.execute(query, params_with_pagination).fetchall()
         con.close()
 
         return {
@@ -249,8 +256,10 @@ def apply_filters(payload: dict):
                     "date": r[3],
                 }
                 for r in rows
-            ]
+            ],
+            "totalCount": total_count  
         }
+
 
     except Exception as e:
         logger.error(f"DuckDB error: {e}")
