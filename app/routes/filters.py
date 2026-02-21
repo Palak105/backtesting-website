@@ -198,7 +198,9 @@ def apply_filters(payload: dict):
 
     base_query = f"""
     WITH data AS (
-        SELECT {", ".join(window_cols)}
+        SELECT 
+            {", ".join(window_cols)},
+            CAST(Date AS DATE) AS Date_cast
         FROM 's3://{bucket}/market_data.parquet'
         WHERE timeframe = ?
     )
@@ -206,10 +208,11 @@ def apply_filters(payload: dict):
         Symbol,
         MarketCapCategory,
         Industry,
-        Date
+        Date_cast AS Date
     FROM data
     WHERE 1=1
     """
+
 
     query = base_query
     params = [timeframe]
@@ -219,11 +222,11 @@ def apply_filters(payload: dict):
         params.append(market_cap)
 
     if start_date:
-        query += " AND Date >= ?"
+        query += " AND Date_cast >= ?"
         params.append(start_date)
 
     if end_date:
-        query += " AND Date <= ?"
+        query += " AND Date_cast <= ?"
         params.append(end_date)
 
     if entry_tree:
@@ -233,10 +236,11 @@ def apply_filters(payload: dict):
             query += f" AND {clause}"
             params.extend(rule_params.values())
 
-    count_query = query.replace(
-        "SELECT DISTINCT\n        Symbol,\n        MarketCapCategory,\n        Industry,\n        Date",
-        "SELECT COUNT(*)"
-    )
+    count_query = f"""
+    SELECT COUNT(*) FROM (
+        {query}
+    ) t
+    """
 
     date_count_query = f"""
     SELECT COUNT(DISTINCT Date) FROM (
