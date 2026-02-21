@@ -58,7 +58,7 @@ def run_backtest(
             # Look up the entry close for that symbol/date/timeframe.
             price_row = con.execute(
                 """
-                SELECT Close
+                SELECT close AS Close
                 FROM 's3://{bucket}/market_data.parquet'
                 WHERE Symbol = ?
                 AND timeframe = ?
@@ -79,7 +79,11 @@ def run_backtest(
 
         candles = con.execute(
             """
-            SELECT CAST(Date AS DATE) AS Date, High, Low, Close
+            SELECT 
+                CAST(Date AS DATE) AS Date,
+                high AS High,
+                low AS Low,
+                close AS Close
             FROM 's3://{bucket}/market_data.parquet'
             WHERE Symbol = ?
             AND timeframe = ?
