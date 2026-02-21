@@ -61,8 +61,8 @@ def run_backtest(
                 SELECT Close
                 FROM 's3://{bucket}/market_data.parquet'
                 WHERE Symbol = ?
-                  AND timeframe = ?
-                  AND Date = ?
+                AND timeframe = ?
+                AND CAST(Date AS DATE) = ?
                 LIMIT 1
                 """.format(bucket=bucket),
                 [symbol, timeframe, entry_date],
@@ -79,13 +79,13 @@ def run_backtest(
 
         candles = con.execute(
             """
-            SELECT Date, High, Low, Close
+            SELECT CAST(Date AS DATE) AS Date, High, Low, Close
             FROM 's3://{bucket}/market_data.parquet'
             WHERE Symbol = ?
-              AND timeframe = ?
-              AND Date > ?
-              AND Date <= ?
-            ORDER BY Date ASC
+            AND timeframe = ?
+            AND CAST(Date AS DATE) > ?
+            AND CAST(Date AS DATE) <= ?
+            ORDER BY CAST(Date AS DATE) ASC
             """.format(bucket=bucket),
             [symbol, timeframe, entry_date, max_exit_date]
         ).df()
